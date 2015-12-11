@@ -1,0 +1,160 @@
+---
+title: "1-ExploratoryAnalysis"
+author: "Grace Pehl, PhD"
+date: "October 18, 2015"
+output: html_document
+---
+
+```{r LoadData}
+bizdata <- readRDS('business1.rds')
+
+head(bizdata)
+names(bizdata)
+str(bizdata)
+unique(bizdata$type) # "business"
+length(unique(bizdata$state)) # 26 states
+length(unique(bizdata$city)) # 378 cities
+```
+
+Business data has 15 variables: business_id, full_address, hours, open, categories, city, review_count, name, neighborhoods, longitude, state, stars, latitude, attributes['Open 24 Hours'], type (='business')
+
+```{r SelectColumns}
+suppressMessages(library(dplyr))
+# Drop columns not needed for analysis, but keep the 24 hour flag
+bizdata <- select(bizdata, -business_id, -full_address, -open, 
+                  -neighborhoods, -type)
+bizdata$open24hours <- bizdata$attributes$`Open 24 Hours`
+bizdata <- select(bizdata, -attributes)
+```
+
+Create a column 'metro_area' to identify to which of the 10 cities the business belongs.
+
+```{r cities}
+# assign businesses to the 10 cities in the dataset
+suppressMessages(library(ggmap))
+cities <- c('Edinburgh, UK', 'Karlsruhe, Germany', 'Montreal, Canada', 
+          'Waterloo, Canada', 'Pittsburgh, PA', 'Charlotte, NC',
+          'Urbana-Champaign, IL', 'Phoenix, AZ', 'Las Vegas, NV', 
+          'Madison, WI')
+saveRDS(cities, 'YelpCities.rds')
+# fetch city long/lat from Data Science Toolkit
+suppressMessages(city_centers <- geocode(cities, source = 'dsk'))
+set.seed(42)
+# cluster long/lat of businesses to long/lat of city centers
+clustered_cities <- kmeans(bizdata[ , c('longitude', 'latitude')], 
+                           city_centers)
+# create new column as factor
+bizdata$metro_area <- factor(clustered_cities$cluster, labels = cities)
+
+### Explore cities
+suppressMessages(library(knitr))
+kable(data.frame(cities, clustered_cities$size), col.names = c('City', 'Businesses'))
+kable(table(bizdata$metro_area, bizdata$state))
+# Check low number states and remove businesses that don't belong in dataset
+bizdata <- bizdata[bizdata$state != 'WA', ] # remove business in Seattle, WA
+bizdata <- bizdata[bizdata$state != 'CA', ] # 3 more businesses
+bizdata <- bizdata[bizdata$state != 'MN', ] # 1 business actually in Eagon, MN
+bizdata <- bizdata[bizdata$state != 'NW', ] # German city 4hrs from Karlsruhe
+# boxplot(bizdata$longitude ~ bizdata$metro_area)
+# boxplot(bizdata$latitude ~ bizdata$metro_area)
+
+bizdata[bizdata$review_count >= 2000, c('name', 'metro_area')]
+# all businesses with >2000 reviews are in Vegas
+table(bizdata[bizdata$review_count >= 1000, 'metro_area'])
+# and all but six of the businesses with >1000
+rm(clustered_cities) # free up memory
+# Done with city and state columns
+bizdata <- select(bizdata, -city, -state)
+saveRDS(bizdata, 'businessMetro.rds')
+```
+
+Create columns for how many hours business is open each day and weekly total.
+
+```{r hours, eval=FALSE}
+bizdata <- readRDS('businessMetro.rds')
+suppressMessages(library(jsonlite))
+bizdata <- flatten(bizdata)
+table(bizdata[bizdata$open24hours == TRUE & !is.na(bizdata$open24hours),
+              'metro_area']) 
+# only 34 businesses are labeled 24hrs, 23 are in Vegas. Only 300 False values
+hourscols <- grep('hours.', names(bizdata), value = TRUE, fixed = TRUE)
+sum(complete.cases(bizdata[, hourscols])) # 23730 complete cases
+#count NA values in hours data and total them for each column
+sapply(lapply(bizdata[, hourscols], is.na), sum)
+# Number of NA's matches between open and close columns of same day
+
+weekdayNames <- c('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+                 'Saturday', 'Sunday')
+    
+for (day in weekdayNames) {
+    # create string for column names
+    opencolumn <- paste('hours.', day, '.open', sep = "")
+    closecolumn <- paste('hours.', day, '.close', sep = "")
+    # convert hh:mm strings to decimal hours
+    library(lubridate)
+    bizdata[ , opencolumn] <- hm(bizdata[ , opencolumn])$hour + 
+                              hm(bizdata[ , opencolumn])$minute / 60.0
+    bizdata[ , closecolumn] <- hm(bizdata[ , closecolumn])$hour +
+                               hm(bizdata[ , closecolumn])$minute / 60.0
+    # look for opening times later than closing times 
+    # increment closing time to the following day
+    bizdata[bizdata[ , opencolumn] >= bizdata[ , closecolumn] &
+            !is.na(bizdata[ , closecolumn]), closecolumn] <-
+        bizdata[bizdata[ , opencolumn] >= bizdata[ , closecolumn] &
+                !is.na(bizdata[ , closecolumn]), closecolumn] + 24
+    # create new column for the total number of hours open each day
+    bizdata[ , paste('hours.', day, sep = "")] <- 
+        bizdata[ , closecolumn] - bizdata[ , opencolumn]
+}
+# calculate total number of hours open each week
+dailyHourscols <- paste('hours.', weekdayNames, sep = "")
+bizdata$hours.total <- rowSums(bizdata[ , dailyHourscols], na.rm = TRUE)
+bizdata[bizdata$hours.total == 0 , 'hours.total'] <- NA
+saveRDS(bizdata, 'businessHours.rds')
+saveRDS(dailyHourscols, 'YelpHoursColumnNames.rds')
+```
+
+```{r categories, eval=FALSE}
+bizdata <- readRDS('businessHours.rds')
+length(unique(bizdata$categories)) # 8046 categories
+parent_categories <- c('Active Life', 'Arts & Entertainment', 'Automotive',
+                       'Beauty & Spas', 'Bicycles', 'Education', 
+                       'Event Planning & Services', 'Financial Services',
+                       'Food', 'Health & Medical', 'Home Services', 
+                       'Hotels & Travel', 'Local Flavor', 'Local Services',
+                       'Mass Media', 'Nightlife', 'Pets', 
+                       'Professional Services', 'Public Services & Government',
+                       'Real Estate', 'Religious Organizations', 'Restaurants',
+                       'Shopping')
+# use loop and anonymous lambda function to access each business's list
+# of categories and create boolean counters for each parent category
+# create empty dataframe where columns are names of categories
+biz_counts <- setNames(data.frame(matrix(ncol = 23, nrow = 0)), 
+                       parent_categories)
+# loop through businesses and increment counters for each category SLOW!!
+for(i in 1:length(bizdata$categories)) {
+    biz_counts <- rbind(biz_counts, t(parent_categories %in% 
+                                          bizdata$categories[[i]]))
+}
+names(biz_counts) <- parent_categories
+table(rowSums(biz_counts))
+#    0     1     2     3     4     5 
+#  517 49930  9689   962    76     4
+colSums(biz_counts)
+bizdata <- cbind(bizdata, biz_counts)
+saveRDS(parent_categories, 'YelpCategoryColumnNames.rds')
+rm(biz_counts)
+# duplicate business records for every category 
+library(reshape2)
+bizdata <- melt(bizdata, measure.vars = parent_categories, variable.name =
+                    'major_category', value.name = 'TF')
+# remove all records where the category is FALSE
+bizdata <- bizdata[bizdata$TF == TRUE, ]
+# remove the true/false column leaving only major_category
+bizdata$TF <- NULL
+# save the dataframe
+bizdata$major_category <- factor(bizdata$major_category)
+saveRDS(bizdata, 'businessCategories.rds')
+# now is 72518 businesses from 61178
+```
+

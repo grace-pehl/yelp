@@ -1,0 +1,105 @@
+---
+title: "Effect of Business Hours on Yelp Ratings"
+author: "Grace Pehl, PhD"
+date: "November 9, 2015"
+output: html_document
+---
+## Introduction
+
+### Primary Question
+
+Every hour a business is open imposes a significant increase in costs for staffing, electricity, etc.  A business with limited hours may have high opportunity costs from losing customers who want to do business outside of operating hours.  Is there an optimal number of hours for a business to be open?
+
+### Introduction to the Dataset
+
+```{r echo=FALSE}
+bizdata <- readRDS('businessHours.rds')
+bizdataCategories <- readRDS('businessCategories.rds')
+library(knitr)
+cities <- data.frame(table(bizdata$metro_area))
+names(cities) <- c('Cities', 'Businesses')
+```
+The [Yelp academic dataset](http://www.yelp.com/dataset_challenge/) provides one perspective on this question.  The dataset contains information on `r dim(bizdata)[1]` businesses in 10 cities: `r kable(cities)` Users on Yelp.com submit reviews of businesses and business owners are able to create a profile for their business.  The dataset includes the average review rating (on a 1 - 5 scale) and the number of reviews that have been submitted for each business.  Other information that may be present for a business include address, geocoordinates, open and closing times, business categories, and other attributes of the business such as specialties, ambiance, and parking availability. I plan to perform a linear regression on the average star rating of each business using the total number of open hours of the business, business category and city as regressors.
+
+### Important Caveats
+
+This analysis will only attempt to quantify the effect of operating hours on customer satisfaction in the form of Yelp rating.  The dataset does not include any financial information for the businesses and cannot be used to address questions of revenue or profitability.  Users of Yelp.com who submit reviews may not be representative of a business's customer base and Yelp ratings may not reflect overall satisfaction with the business. 
+
+## Methods
+
+### Data Wrangling
+
+The dataset required a significant amount of preprocessing before any analysis.  The JSON formatted entries had to be joined into a complete JSON object in order to be read into R and converted to a dataframe.  The outcome of interest was the rating of each business (called 'stars' on Yelp) and there were no missing values.  The rating for each business was on a five point scale (1-5) rounded to the nearest half point.  None of the predictor variables of interest (city, operating hours, and category) was in the proper format for analysis. 
+
+#### City
+
+Exploratory analysis reveled that the businesses came from 378 unique cities in 26 states.  I used k-means clustering on their geocoordinates (latitude/longitude) to sort the businesses by metro area.  I set the cluster centers to be the lat/long of the 10 cities included in the [Yelp challenge](http://www.yelp.com/dataset_challenge/).  Examination of the state locations revealed 7 businesses mistakenly included in the dataset due to mistakes in their lat/long coordinates.  These were deleted.  
+
+#### Operating Hours
+
+Of the `r length(bizdata)` businesses in the dataset, `r sum(!is.na(bizdata$hours.total))` of them included information on their daily opening and closing times.  Businesses who's closing times were earlier than their opening times were interpreted to be open past midnight.  The number of hours that the business was open was totaled by day and by week. 
+
+#### Business Category
+
+Businesses on Yelp can an unconstrained number of categories.  The [Yelp website](https://www.yelp.com/developers/documentation/v2/all_category_list) lists 1,243 possible categories organized into 23 families.  I searched for these 23 major categories within each business's list of categories.  Businesses with more than one major category were duplicated to appear in each of their major categories.  This final dataset was saved separately so that analysis could be done on unique businesses unless the businesses were being divide by categories. 
+
+### Exploratory Analysis
+
+Positive business ratings greatly outnumber negative ratings with `r round(length(bizdata[bizdata$stars > 3, 'stars'])/sum(!is.na(bizdata$stars)), 2) * 100`% of businesses having a rating greater than 3.  The average rating is `r round(mean(bizdata$stars, na.rm = TRUE), 1)` with a standard deviation of `r round(sd(bizdata$stars, na.rm = TRUE), 1)`.
+
+```{r echo=FALSE}
+ratings <- data.frame(table(bizdata$stars))
+names(ratings) <- c('Yelp Rating', 'Businesses')
+kable(ratings)
+```
+
+Overall, operating hours were only weakly related to a business's rating (correlation `r round(cor(bizdata$hours.total, bizdata$stars, use = 'pairwise.complete.obs'), 2)`) and the trend was negative indicating that businesses with more limited hours may have slightly higher ratings.  However, this smoothes over differences between the 10 cities (and 4 countries) and the many different types of businesses in the dataset.
+
+Separating the businesses by city does not reveal any dramatic differences.  However exploring the businesses by category shows some possible relationships, which may vary by city.
+
+```{r PlotsCity, echo=FALSE}
+#library(lattice)
+#xyplot(hours.total ~ stars | metro_area, data = bizdata, 
+#       xlab = 'Business Rating', ylab = 'Total Weekly Hours', 
+#       main = 'Operating Hours v. Rating for Each City')
+```
+
+```{r PlotsCategory, echo=FALSE}
+#xyplot(hours.total ~ stars | major_category, data = bizdataCategories, 
+#       ylab = 'Total Weekly Hours', xlab = 'Business Rating',
+#       main = 'Operating Hours v. Rating for Each Business Category')
+suppressMessages(library(ggplot2))
+ggplot(aes(x = hours.total, y = stars), data = bizdataCategories[!is.na(bizdataCategories$hours.total), ]) + 
+    geom_point(alpha = 0.02, position = position_jitter(w = 7, h = 0.2)) + facet_wrap(~major_category) + 
+    geom_smooth(method = "lm", color = 'red') + xlab('Total Weekly Operating Hours') + ylab('Business Rating') + 
+    ggtitle('Business Rating v. Operating Hours')
+```
+
+### Regression Model
+
+To explore the relationship between the business rating (outcome) and the business's operating hours, city, and category (regressors), I constructed a linear model.  In this model, hours and rating are numeric variable while city and category are treated as categorical.  Within R, each level of a categorical variable is treated as a separate, binary predictor with the first level used as the reference level.  The coefficients of the other terms are the relative change from the reference level.  All missing values are excluded from the model.
+
+```{r Regression, echo=FALSE}
+
+linModel <- lm(stars ~ hours.total + major_category + metro_area, data = 
+                   bizdataCategories, na.action = na.exclude)
+
+# summary(linModel)
+```
+
+## Results
+
+Of the 33 terms in the linear regression, 28 of the coefficients were statistically significant at the p < .05 level.  However, few coefficients were practically significant.  The practical significance limit in this analysis was +/- 0.5 because that is the resolution of the ratings values. The business's total operating hours and location were below the practical significance limit.  Among business categories, a business in Financial Services, Nightlife, Public Services and Government, or Restaurants could expect to be rated a half point lower and businesses in Real Estate, a full point lower. 
+
+```{r Results, echo=FALSE}
+results <- summary(linModel)$coefficients
+SignifResults <- results[abs(results[ , 'Estimate']) + abs(results[ , 'Std. Error']) > 0.5, ]
+row.names(SignifResults) <- c('Intercept Term', 'Financial Services', 'Nightlife', 'Public Services & Government', 'Real Estate', 
+                              'Restaurants')
+colnames(SignifResults)[4] <- 'Pr(>abs(t))'
+kable(SignifResults)
+```
+
+## Discussion
+
+In this analysis, the number of hours that a business was open each week was not found to significantly affect the rating the business received from the users of Yelp.com.  Ratings did not vary significantly across the 10 cities from 4 countries included in the dataset.  Business ratings also did not vary significantly across the major categories of businesses with the exception of Financial Services, Nightlife, Public Services & Government, Real Estate, and Restaurants, where ratings would be expected to be slightly lower.  The consistency of the ratings of businesses on Yelp.com indicates that it is not a very useful metric to assess the businesses.  People trying to evaluate businesses based on their Yelp.com reviews should probably focus more on the details of the reviews rather than the overall rating of the business.

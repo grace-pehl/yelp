@@ -1,0 +1,59 @@
+---
+title: "Modeling"
+author: "Grace Pehl, PhD"
+date: "November 7, 2015"
+output: html_document
+---
+Business dataset contains business name (char), city (factor), number of reviews (int), star rating (num), latitude and longitude (num), list of all categories, 23 logicals for the major business categories, 7 opening/closing times (as decimal hours after midnight), number of hours open each day, number of hours open each week.
+```{r Correlations}
+# Load data with unique business per row 
+# (Does not include major categories for each business)
+bizdata <- readRDS('businessHours.rds')
+dailyHourscols <- readRDS('YelpHoursColumnNames.rds')
+
+summary(bizdata$stars) # range 1-5, mean 3.673, median 3.5
+sd(bizdata$stars, na.rm = TRUE) # 0.891
+hist(bizdata$stars)
+cor(bizdata$review_count, bizdata$stars, use = 'pairwise.complete.obs') # 0.02
+# total hours
+cor(bizdata$hours.total, bizdata$stars, use = 'pairwise.complete.obs') # -0.21
+# daily hours
+cor(bizdata[ , dailyHourscols], bizdata$stars, use = 'pairwise.complete.obs') #-0.15 to -0.20
+# opening/closing time
+opencolumns <- grep('.open', names(bizdata), fixed = TRUE, value = TRUE) 
+cor(bizdata[ , opencolumns], bizdata$stars, use = 'pairwise.complete.obs') # ~.02
+closecolumns <- grep('.close', names(bizdata), fixed = TRUE, value = TRUE)
+cor(bizdata[ , closecolumns], bizdata$stars, use = 'pairwise.complete.obs') #-0.2
+# correlations between hours related columns
+cor(bizdata[ , opencolumns], bizdata[ , closecolumns], use = 'pairwise.complete.obs') # ~0.1
+cor(bizdata[ , opencolumns], bizdata[ , dailyHourscols], use = 'pairwise.complete.obs') # ~-0.6
+cor(bizdata[ , dailyHourscols], use = 'pairwise.complete.obs') # very high
+
+boxplot(stars ~ metro_area, data = bizdata)
+boxplot(stars ~ metro_area, data = bizdata[bizdata$stars < 3, ])
+boxplot(review_count ~ metro_area, data = bizdata)
+boxplot(hours.total ~ metro_area, data = bizdata)
+
+library(lattice)
+xyplot(review_count ~ stars | metro_area, data = bizdata)
+xyplot(hours.total ~ stars | metro_area, data = bizdata)
+bwplot(stars ~ metro_area, data = bizdata)
+bwplot(hours.total ~ metro_area, data = bizdata)
+```
+
+```{r ConditionByCategory}
+bizdata <- readRDS('businessCategories.rds')
+xyplot(hours.total ~ stars | major_category, data = bizdata)#######
+bwplot(stars ~ major_category, data = bizdata)
+bwplot(stars ~ major_category | metro_area, data = bizdata)
+```
+
+```{r Regression}
+
+linModel <- lm(stars ~ hours.total + major_category + metro_area, data = 
+                   bizdata, na.action = na.exclude)
+par(mfrow = c(2,2))
+plot(linModel)
+summary(linModel)
+linModel$coefficients[abs(linModel$coefficients) > 0.5]
+```
